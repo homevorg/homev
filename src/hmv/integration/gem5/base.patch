@@ -1,0 +1,587 @@
+diff --git a/include/gem5/asm/generic/m5ops.h b/include/gem5/asm/generic/m5ops.h
+--- a/include/gem5/asm/generic/m5ops.h
++++ b/include/gem5/asm/generic/m5ops.h
+@@ -110,6 +110,9 @@
+     M5OP(m5_dist_toggle_sync, M5OP_DIST_TOGGLE_SYNC)            \
+     M5OP(m5_workload, M5OP_WORKLOAD)                            \
+     M5OP(m5_hypercall, M5OP_HYPERCALL)                          \
++    /* HOME-V: pseudo-instructions */                           \
++    M5OP(gem5_hmv_execute, M5OP_RESERVED1)                      \
++    M5OP(gem5_hmv_load, M5OP_RESERVED2)                         \
+
+ #define M5OP_MERGE_TOKENS_I(a, b) a##b
+ #define M5OP_MERGE_TOKENS(a, b) M5OP_MERGE_TOKENS_I(a, b)
+diff --git a/include/gem5/m5ops.h b/include/gem5/m5ops.h
+--- a/include/gem5/m5ops.h
++++ b/include/gem5/m5ops.h
+@@ -36,6 +36,7 @@ extern "C" {
+ #include <stdint.h>
+
+ #include <gem5/asm/generic/m5ops.h>
++#include <hmv/integration/gem5/m5ops.h> // HOME-V: pseudo-instructions
+
+ void m5_arm(uint64_t address);
+ void m5_quiesce(void);
+diff --git a/src/arch/arm/isa/insts/m5ops.isa b/src/arch/arm/isa/insts/m5ops.isa
+--- a/src/arch/arm/isa/insts/m5ops.isa
++++ b/src/arch/arm/isa/insts/m5ops.isa
+@@ -48,6 +48,7 @@ let {{
+                                    'X0 = ret;',
+                                    "predicate_test": predicateTest },
+                                  [ "IsNonSpeculative", "IsUnverifiable",
++                                   "IsSquashAfter", "IsSerializeAfter",
+                                    "IsPseudo" ]);
+     header_output += BasicDeclare.subst(gem5OpIop)
+     decoder_output += BasicConstructor.subst(gem5OpIop)
+@@ -59,6 +60,7 @@ let {{
+                                    'R1 = bits(ret, 63, 32);',
+                                    "predicate_test": predicateTest },
+                                  [ "IsNonSpeculative", "IsUnverifiable",
++                                   "IsSquashAfter", "IsSerializeAfter",
+                                    "IsPseudo" ]);
+     header_output += BasicDeclare.subst(gem5OpIop)
+     decoder_output += BasicConstructor.subst(gem5OpIop)
+diff --git a/src/arch/riscv/isa/formats/m5ops.isa b/src/arch/riscv/isa/formats/m5ops.isa
+--- a/src/arch/riscv/isa/formats/m5ops.isa
++++ b/src/arch/riscv/isa/formats/m5ops.isa
+@@ -47,7 +47,7 @@ def format M5Op() {{
+                 pseudo_inst::pseudoInst<RegABI64>(xc->tcBase(), M5FUNC, result);
+                 a0 = rvSext(result);
+             }''',
+-            ['IsNonSpeculative', 'IsSerializeAfter'])
++            ['IsNonSpeculative', 'IsSerializeAfter', "IsSquashAfter"])
+     header_output = BasicDeclare.subst(iop)
+     decoder_output = BasicConstructor.subst(iop)
+     decode_block = BasicDecode.subst(iop)
+diff --git a/src/cpu/BaseCPU.py b/src/cpu/BaseCPU.py
+--- a/src/cpu/BaseCPU.py
++++ b/src/cpu/BaseCPU.py
+@@ -165,6 +165,10 @@ class BaseCPU(ClockedObject):
+
+     tracer = Param.InstTracer(default_tracer, "Instruction tracer")
+
++    # HOME-V: thread monitor
++    hmv_thread_monitor = Param.HMVThreadMonitor(
++        NULL, "Pointer to the HMVThreadMonitor"
++    )
+     icache_port = RequestPort("Instruction Port")
+     dcache_port = RequestPort("Data Port")
+     _cached_ports = ["icache_port", "dcache_port"]
+diff --git a/src/cpu/base.cc b/src/cpu/base.cc
+--- a/src/cpu/base.cc
++++ b/src/cpu/base.cc
+@@ -139,6 +139,7 @@ BaseCPU::BaseCPU(const Params &p, bool is_checker)
+       currentFunctionEnd(0), functionEntryTick(0),
+       baseStats(this),
+       addressMonitor(p.numThreads),
++      hmvThreadMonitor(p.hmv_thread_monitor), // HOME-V: thread monitor
+       syscallRetryLatency(p.syscallRetryLatency),
+       pwrGatingLatency(p.pwr_gating_latency),
+       powerGatingOnIdle(p.power_gating_on_idle),
+diff --git a/src/cpu/base.hh b/src/cpu/base.hh
+--- a/src/cpu/base.hh
++++ b/src/cpu/base.hh
+@@ -67,6 +67,7 @@ class BaseCPU;
+ struct BaseCPUParams;
+ class CheckerCPU;
+ class ThreadContext;
++class HMVThreadMonitor; // HOME-V: thread monitor
+ class System;
+
+ struct AddressMonitor
+@@ -676,6 +677,8 @@ class BaseCPU : public ClockedObject
+     std::vector<AddressMonitor> addressMonitor;
+
+   public:
++    HMVThreadMonitor *const hmvThreadMonitor;  // HOME-V: thread monitor
++
+     void armMonitor(ThreadID tid, Addr address);
+     bool mwait(ThreadID tid, PacketPtr pkt);
+     void mwaitAtomic(ThreadID tid, ThreadContext *tc, BaseMMU *mmu);
+diff --git a/src/cpu/o3/commit.cc b/src/cpu/o3/commit.cc
+--- a/src/cpu/o3/commit.cc
++++ b/src/cpu/o3/commit.cc
+@@ -62,6 +62,7 @@
+ #include "debug/Drain.hh"
+ #include "debug/ExecFaulting.hh"
+ #include "debug/HtmCpu.hh"
++#include "hmv/integration/gem5/hmv_thread_monitor.hh" // HOME-V: thread monitor
+ #include "params/BaseO3CPU.hh"
+ #include "sim/faults.hh"
+ #include "sim/full_system.hh"
+@@ -1241,6 +1242,10 @@ Commit::commitHead(const DynInstPtr &head_inst, unsigned inst_num)
+                 tid, head_inst->seqNum, head_inst->pcState());
+     }
+
++    // HOME-V: thread monitor
++    if (cpu->hmvThreadMonitor) {
++        cpu->hmvThreadMonitor->local_commit(head_inst);
++    }
+     // Update the commit rename map
+     for (int i = 0; i < head_inst->numDestRegs(); i++) {
+         renameMap[tid]->setEntry(head_inst->flattenedDestIdx(i),
+diff --git a/src/cpu/o3/dyn_inst.hh b/src/cpu/o3/dyn_inst.hh
+--- a/src/cpu/o3/dyn_inst.hh
++++ b/src/cpu/o3/dyn_inst.hh
+@@ -356,6 +356,8 @@ class DynInst : public ExecContext, public RefCounted
+     ssize_t sqIdx = -1;
+     typename LSQUnit::SQIterator sqIt;
+
++    // HOME-V: Pointer to access data before it is written to memData
++    uint64_t hmvAvailabilityData;
+
+     /////////////////////// TLB Miss //////////////////////
+     /**
+diff --git a/src/cpu/o3/fetch.cc b/src/cpu/o3/fetch.cc
+--- a/src/cpu/o3/fetch.cc
++++ b/src/cpu/o3/fetch.cc
+@@ -60,6 +60,7 @@
+ #include "debug/Drain.hh"
+ #include "debug/Fetch.hh"
+ #include "debug/O3CPU.hh"
++#include "hmv/integration/gem5/hmv_thread_monitor.hh" // HOME-V: thread monitor
+ #include "mem/packet.hh"
+ #include "params/BaseO3CPU.hh"
+ #include "sim/byteswap.hh"
+@@ -1280,6 +1280,10 @@ Fetch::fetch(bool &status_change)
+             numInst++;
+
+             instruction->fetchTick = curTick();
++            // HOME-V: thread monitor
++            if (cpu->hmvThreadMonitor) {
++                cpu->hmvThreadMonitor->enter_time(instruction);
++            }
+
+             set(next_pc, this_pc);
+
+diff --git a/src/cpu/o3/lsq_unit.cc b/src/cpu/o3/lsq_unit.cc
+--- a/src/cpu/o3/lsq_unit.cc
++++ b/src/cpu/o3/lsq_unit.cc
+@@ -51,6 +51,7 @@
+ #include "debug/HtmCpu.hh"
+ #include "debug/IEW.hh"
+ #include "debug/LSQUnit.hh"
++#include "hmv/integration/gem5/hmv_thread_monitor.hh" // HOME-V: thread monitor
+ #include "mem/packet.hh"
+ #include "mem/request.hh"
+
+@@ -180,6 +181,9 @@ LSQUnit::completeDataAccess(PacketPtr pkt)
+             if (inst->isStore() || inst->isAtomic()) {
+                 request->writebackDone();
+                 completeStore(request->instruction()->sqIt);
++            // HOME-V: thread monitor
++            } else if (cpu->hmvThreadMonitor && inst->isLoad()) {
++                cpu->hmvThreadMonitor->memory_read(inst);
+             }
+         } else if (inst->isStore()) {
+             // This is a regular store (i.e., not store conditionals and
+@@ -961,6 +965,10 @@ LSQUnit::squash(const InstSeqNum &squashed_num)
+             DPRINTF(HtmCpu, ">> htmStarts (%d) : htmStops-- (%d)\n",
+               htmStarts, htmStops);
+         }
++        // HOME-V: thread monitor
++        if (cpu->hmvThreadMonitor) {
++            cpu->hmvThreadMonitor->squash_read(loadQueue.back().instruction());
++        }
+         // Clear the smart pointer to make sure it is decremented.
+         loadQueue.back().instruction()->setSquashed();
+         loadQueue.back().clear();
+@@ -1027,6 +1035,10 @@ LSQUnit::squash(const InstSeqNum &squashed_num)
+             stalled = false;
+             stallingStoreIsn = 0;
+         }
++        // HOME-V: thread monitor
++        if (cpu->hmvThreadMonitor) {
++            cpu->hmvThreadMonitor->squash_write(storeQueue.back().instruction());
++        }
+
+         // Clear the smart pointer to make sure it is decremented.
+         storeQueue.back().instruction()->setSquashed();
+@@ -1139,6 +1151,10 @@ LSQUnit::writeback(const DynInstPtr &inst, PacketPtr pkt)
+
+     // see if this load changed the PC
+     iewStage->checkMisprediction(inst);
++    // HOME-V: thread monitor
++    if (cpu->hmvThreadMonitor && inst->isLoad()) {
++        cpu->hmvThreadMonitor->local_completion_read(inst);
++    }
+ }
+
+ void
+@@ -1202,6 +1218,10 @@ LSQUnit::completeStore(typename StoreQueue::iterator store_idx)
+     if (cpu->checker &&  !store_inst->isStoreConditional()) {
+         cpu->checker->verify(store_inst);
+     }
++    // HOME-V: thread monitor
++    if (cpu->hmvThreadMonitor) {
++        cpu->hmvThreadMonitor->local_completion_write(store_inst);
++    }
+ }
+
+ bool
+@@ -1638,8 +1658,14 @@ LSQUnit::write(LSQRequest *request, uint8_t *data, ssize_t store_idx)
+     // copy data into the storeQueue only if the store request has valid data
+     if (!(request->req()->getFlags() & Request::CACHE_BLOCK_ZERO) &&
+         !request->req()->isCacheMaintenance() &&
+-        !request->req()->isAtomic())
++        !request->req()->isAtomic()) {
+         memcpy(storeQueue[store_idx].data(), data, size);
++        // HOME-V: thread monitor
++        if (cpu->hmvThreadMonitor) {
++            auto& inst = storeQueue[store_idx].instruction();
++            cpu->hmvThreadMonitor->availability(inst, data, size);
++        }
++    }
+
+     // This function only writes the data to the store queue, so no fault
+     // can happen here.
+diff --git a/src/cpu/o3/lsq_unit.hh b/src/cpu/o3/lsq_unit.hh
+--- a/src/cpu/o3/lsq_unit.hh
++++ b/src/cpu/o3/lsq_unit.hh
+@@ -143,6 +143,8 @@ class LSQUnit
+         uint32_t& size() { return _size; }
+         const uint32_t& size() const { return _size; }
+         const DynInstPtr& instruction() const { return _inst; }
++        // HOME-V: method required to set hmvAvailabilityData
++        DynInstPtr& instruction() { return _inst; }
+         /** @} */
+     };
+
+diff --git a/src/mem/ruby/SConscript b/src/mem/ruby/SConscript
+--- a/src/mem/ruby/SConscript
++++ b/src/mem/ruby/SConscript
+@@ -131,3 +131,5 @@ MakeInclude('system/GPUCoalescer.hh')
+ MakeInclude('system/HTMSequencer.hh')
+ MakeInclude('system/VIPERCoalescer.hh')
+ MakeInclude('system/VIPERSequencer.hh')
++# HOME-V: controller
++MakeInclude('../../hmv/integration/gem5/HMVController.hh')
+diff --git a/src/mem/ruby/network/MessageBuffer.cc b/src/mem/ruby/network/MessageBuffer.cc
+--- a/src/mem/ruby/network/MessageBuffer.cc
++++ b/src/mem/ruby/network/MessageBuffer.cc
+@@ -66,6 +66,7 @@ MessageBuffer::MessageBuffer(const Params &p)
+     m_randomization(p.randomization),
+     m_allow_zero_latency(p.allow_zero_latency),
+     m_routing_priority(p.routing_priority),
++    m_hmv_thread_monitor(p.hmv_thread_monitor), // HOME-V: thread monitor
+     ADD_STAT(m_not_avail_count, statistics::units::Count::get(),
+              "Number of times this buffer did not have N slots available"),
+     ADD_STAT(m_msg_count, statistics::units::Count::get(),
+@@ -299,6 +300,10 @@ MessageBuffer::enqueue(MsgPtr message, Tick current_time, Tick delta,
+     assert(m_consumer != NULL);
+     m_consumer->scheduleEventAbsolute(arrival_time);
+     m_consumer->storeEventInfo(m_vnet_id);
++    // HOME-V: thread monitor
++    if (m_hmv_thread_monitor) {
++        message->probeOnEnqueue(*m_hmv_thread_monitor);
++    }
+ }
+
+ Tick
+@@ -324,6 +329,10 @@ MessageBuffer::dequeue(Tick current_time, bool decrement_messages)
+     }
+     ++m_dequeues_this_cy;
+
++    // HOME-V: thread monitor
++    if (m_hmv_thread_monitor) {
++        message->probeOnDequeue(*m_hmv_thread_monitor);
++    }
+     pop_heap(m_prio_heap.begin(), m_prio_heap.end(), std::greater<MsgPtr>());
+     m_prio_heap.pop_back();
+     if (decrement_messages) {
+diff --git a/src/mem/ruby/network/MessageBuffer.hh b/src/mem/ruby/network/MessageBuffer.hh
+--- a/src/mem/ruby/network/MessageBuffer.hh
++++ b/src/mem/ruby/network/MessageBuffer.hh
+@@ -67,6 +67,7 @@
+
+ namespace gem5
+ {
++class HMVThreadMonitor; // HOME-V: thread monitor
+
+ namespace ruby
+ {
+@@ -287,6 +288,8 @@ class MessageBuffer : public SimObject
+     int m_input_link_id;
+     int m_vnet_id;
+
++    // HOME-V: thread monitor
++    gem5::HMVThreadMonitor *const m_hmv_thread_monitor;
+     // Count the # of times I didn't have N slots available
+     statistics::Scalar m_not_avail_count;
+     statistics::Scalar m_msg_count;
+diff --git a/src/mem/ruby/network/MessageBuffer.py b/src/mem/ruby/network/MessageBuffer.py
+--- a/src/mem/ruby/network/MessageBuffer.py
++++ b/src/mem/ruby/network/MessageBuffer.py
+@@ -88,3 +88,5 @@ class MessageBuffer(SimObject):
+                                      consumed by the network. Smaller value \
+                                      means higher priority",
+     )
++    # HOME-V: thread monitor
++    hmv_thread_monitor = Param.HMVThreadMonitor(NULL, "HOME-V thread monitor")
+diff --git a/src/mem/ruby/protocol/MESI_Three_Level-msg.sm b/src/mem/ruby/protocol/MESI_Three_Level-msg.sm
+--- a/src/mem/ruby/protocol/MESI_Three_Level-msg.sm
++++ b/src/mem/ruby/protocol/MESI_Three_Level-msg.sm
+@@ -97,4 +97,20 @@ structure(CoherenceMsg, desc="...", interface="Message") {
+     // read data from those messages that contain the block
+     return testAndWrite(addr, DataBlk, pkt);
+   }
++  // HOME-V: thread monitor
++  void probeOnEnqueue(HMVThreadMonitor& hmvThreadMonitor) {
++    if (Class == CoherenceClass:DATA ||
++        Class == CoherenceClass:STALE_DATA ||
++        Class == CoherenceClass:DATA_EXCLUSIVE) {
++      hmvThreadMonitor.remote_commit(addr, DataBlk);
++    }
++  }
++  // HOME-V: thread monitor
++  void probeOnDequeue(HMVThreadMonitor& hmvThreadMonitor) {
++    if (Class == CoherenceClass:DATA ||
++        Class == CoherenceClass:STALE_DATA ||
++        Class == CoherenceClass:DATA_EXCLUSIVE) {
++      hmvThreadMonitor.remote_completion(addr, DataBlk);
++    }
++  }
+ }
+diff --git a/src/mem/ruby/protocol/MESI_Two_Level-msg.sm b/src/mem/ruby/protocol/MESI_Two_Level-msg.sm
+--- a/src/mem/ruby/protocol/MESI_Two_Level-msg.sm
++++ b/src/mem/ruby/protocol/MESI_Two_Level-msg.sm
+@@ -113,4 +113,18 @@ structure(ResponseMsg, desc="...", interface="Message") {
+     // read data from those messages that contain the block
+     return testAndWrite(addr, DataBlk, pkt);
+   }
++  // HOME-V: thread monitor
++  void probeOnEnqueue(HMVThreadMonitor& hmvThreadMonitor) {
++    if (Type == CoherenceResponseType:DATA ||
++        Type == CoherenceResponseType:DATA_EXCLUSIVE) {
++      hmvThreadMonitor.remote_commit(addr, DataBlk);
++    }
++  }
++  // HOME-V: thread monitor
++  void probeOnDequeue(HMVThreadMonitor& hmvThreadMonitor) {
++    if (Type == CoherenceResponseType:DATA ||
++        Type == CoherenceResponseType:DATA_EXCLUSIVE) {
++      hmvThreadMonitor.remote_completion(addr, DataBlk);
++    }
++  }
+ }
+diff --git a/src/mem/ruby/protocol/MOESI_CMP_directory-msg.sm b/src/mem/ruby/protocol/MOESI_CMP_directory-msg.sm
+--- a/src/mem/ruby/protocol/MOESI_CMP_directory-msg.sm
++++ b/src/mem/ruby/protocol/MOESI_CMP_directory-msg.sm
+@@ -147,4 +147,18 @@ structure(ResponseMsg, desc="...", interface="Message") {
+     // No check required since all messages are written
+     return testAndWrite(addr, DataBlk, pkt);
+   }
++  // HOME-V: thread monitor
++  void probeOnEnqueue(HMVThreadMonitor& hmvThreadMonitor) {
++    if (Type == CoherenceResponseType:DATA ||
++        Type == CoherenceResponseType:DATA_EXCLUSIVE) {
++      hmvThreadMonitor.remote_commit(addr, DataBlk);
++    }
++  }
++  // HOME-V: thread monitor
++  void probeOnDequeue(HMVThreadMonitor& hmvThreadMonitor) {
++    if (Type == CoherenceResponseType:DATA ||
++        Type == CoherenceResponseType:DATA_EXCLUSIVE) {
++      hmvThreadMonitor.remote_completion(addr, DataBlk);
++    }
++  }
+ }
+diff --git a/src/mem/ruby/protocol/RubySlicc_Defines.sm b/src/mem/ruby/protocol/RubySlicc_Defines.sm
+--- a/src/mem/ruby/protocol/RubySlicc_Defines.sm
++++ b/src/mem/ruby/protocol/RubySlicc_Defines.sm
+@@ -31,6 +31,7 @@ NodeID version;
+ MachineID machineID;
+ NodeID clusterID;
+ Cycles recycle_latency;
++HMVController * hmv_controller; // HOME-V: controller
+
+ // Functions implemented in the AbstractController class for
+ // making functional access to the memory maintained by the
+diff --git a/src/mem/ruby/protocol/RubySlicc_Types.sm b/src/mem/ruby/protocol/RubySlicc_Types.sm
+--- a/src/mem/ruby/protocol/RubySlicc_Types.sm
++++ b/src/mem/ruby/protocol/RubySlicc_Types.sm
+@@ -274,3 +274,14 @@ structure(RubyPrefetcherProxy, external = "yes") {
+     // this for every RubyPrefetcherProxy object present
+     void regProbePoints();
+ }
++// HOME-V: error injection
++external_type(HMVFault, primitive="yes");
++// HOME-V: error injection
++structure(HMVController, external = "yes") {
++  bool can_inject(HMVFault, Addr);
++}
++// HOME-V: thread monitor
++structure(HMVThreadMonitor, primitive = "yes", external = "yes") {
++  void remote_commit(Addr addr, DataBlock datablk);
++  void remote_completion(Addr addr, DataBlock datablk);
++}
+diff --git a/src/mem/ruby/slicc_interface/AbstractController.cc b/src/mem/ruby/slicc_interface/AbstractController.cc
+--- a/src/mem/ruby/slicc_interface/AbstractController.cc
++++ b/src/mem/ruby/slicc_interface/AbstractController.cc
+@@ -64,6 +64,7 @@ AbstractController::AbstractController(const Params &p)
+       m_waiting_mem_retry(false),
+       m_mem_ctrl_waiting_retry(false),
+       memoryPort(csprintf("%s.memory", name()), this),
++      m_hmv_controller_ptr(p.hmv_controller), // HOME-V: controller
+       addrRanges(p.addr_ranges.begin(), p.addr_ranges.end()),
+       mRetryRespEvent{*this, false},
+       stats(this)
+diff --git a/src/mem/ruby/slicc_interface/AbstractController.hh b/src/mem/ruby/slicc_interface/AbstractController.hh
+--- a/src/mem/ruby/slicc_interface/AbstractController.hh
++++ b/src/mem/ruby/slicc_interface/AbstractController.hh
+@@ -73,6 +73,7 @@ class Network;
+ class GPUCoalescer;
+ class DMASequencer;
+ class RubySystem;
++class HMVController; // HOME-V: controller
+
+ // used to communicate that an in_port peeked the wrong message type
+ class RejectException: public std::exception
+@@ -466,6 +467,7 @@ class AbstractController : public ClockedObject, public Consumer
+         {}
+     };
+
++    gem5::HMVController *const m_hmv_controller_ptr; // HOME-V: controller
+     RubySystem *m_ruby_system = nullptr;
+
+     // Formerly in RubySlicc_ComponentMapping.hh. Moved here to access
+diff --git a/src/mem/ruby/slicc_interface/Controller.py b/src/mem/ruby/slicc_interface/Controller.py
+--- a/src/mem/ruby/slicc_interface/Controller.py
++++ b/src/mem/ruby/slicc_interface/Controller.py
+@@ -80,6 +80,8 @@ class RubyController(ClockedObject):
+     )
+
+     system = Param.System(Parent.any, "system object parameter")
++    # HOME-V: controller
++    hmv_controller = Param.HMVController(NULL, "HMV Controller")
+
+     # These can be used by a protocol to enable reuse of the same machine
+     # types to model different levels of the cache hierarchy
+diff --git a/src/mem/ruby/slicc_interface/Message.hh b/src/mem/ruby/slicc_interface/Message.hh
+--- a/src/mem/ruby/slicc_interface/Message.hh
++++ b/src/mem/ruby/slicc_interface/Message.hh
+@@ -49,6 +49,7 @@
+ #include "mem/ruby/common/NetDest.hh"
+ #include "mem/ruby/common/WriteMask.hh"
+ #include "mem/ruby/protocol/MessageSizeType.hh"
++#include "hmv/integration/gem5/hmv_thread_monitor.hh" // HOME-V: thread monitor
+
+ namespace gem5
+ {
+@@ -121,6 +122,12 @@ class Message
+     void setIncomingLink(int link) { incoming_link = link; }
+     int getVnet() const { return vnet; }
+     void setVnet(int net) { vnet = net; }
++    // HOME-V: thread monitor
++    virtual void probeOnEnqueue(gem5::HMVThreadMonitor &hmvThreadMonitor)
++    { panic("probeOnEnqueue(HMVThreadMonitor) not implemented"); }
++    // HOME-V: thread monitor
++    virtual void probeOnDequeue(gem5::HMVThreadMonitor &hmvThreadMonitor)
++    { panic("probeOnDequeue(HMVThreadMonitor) not implemented"); }
+
+   protected:
+     int m_block_size = 0;
+diff --git a/src/mem/slicc/parser.py b/src/mem/slicc/parser.py
+--- a/src/mem/slicc/parser.py
++++ b/src/mem/slicc/parser.py
+@@ -840,6 +840,10 @@ class SLICC(Grammar):
+     def p_literal__string(self, p):
+         "literal : STRING"
+         p[0] = ast.LiteralExprAST(self, p[1], "std::string")
++    # HOME-V: support C++ scoped enum values in SLICC
++    def p_literal__enumvalue(self, p):
++        "literal : IDENT DOUBLE_COLON IDENT"
++        p[0] = ast.LiteralExprAST(self, p[1] + p[2] + p[3], p[1])
+
+     def p_literal__number(self, p):
+         "literal : NUMBER"
+diff --git a/src/mem/slicc/symbols/StateMachine.py b/src/mem/slicc/symbols/StateMachine.py
+--- a/src/mem/slicc/symbols/StateMachine.py
++++ b/src/mem/slicc/symbols/StateMachine.py
+@@ -1648,6 +1648,7 @@ ${ident}_Controller::wakeup()
+ #include "base/trace.hh"
+ #include "debug/ProtocolTrace.hh"
+ #include "debug/RubyGenerated.hh"
++#include "hmv/integration/gem5/hmv_controller.hh" // HOME-V: controller
+ #include "mem/ruby/protocol/${gen_filename}_Controller.hh"
+ #include "mem/ruby/protocol/${gen_filename}_Event.hh"
+ #include "mem/ruby/protocol/${gen_filename}_State.hh"
+@@ -1738,6 +1739,14 @@ if (result == TransitionResult_Valid) {
+     DPRINTF(RubyGenerated, "next_state: %s\\n",
+             ${ident}_State_to_string(next_state));
+     countTransition(state, event);
++    // HOME-V: coverage metric
++    if (m_hmv_controller_ptr) {
++        m_hmv_controller_ptr->push_transition(
++            "${ident}", ${ident}_State_to_string(state),
++            ${ident}_Event_to_string(event),
++            ${ident}_State_to_string(next_state),
++            addr, m_version);
++    }
+
+     DPRINTFR(ProtocolTrace, "%15d %3s %10s%20s %6s>%-6s %#x %s\\n",
+              curTick(), m_version, "${ident}",
+diff --git a/src/sim/System.py b/src/sim/System.py
+--- a/src/sim/System.py
++++ b/src/sim/System.py
+@@ -163,3 +163,5 @@ class System(SimObject):
+         "Base of the 64KiB PA range used for "
+         "memory-mapped m5ops. Set to 0 to disable.",
+     )
++    # HOME-V: controller
++    hmv_controller = Param.HMVController(NULL, "Pointer to HOME-V controller")
+diff --git a/src/sim/pseudo_inst.hh b/src/sim/pseudo_inst.hh
+--- a/src/sim/pseudo_inst.hh
++++ b/src/sim/pseudo_inst.hh
+@@ -50,6 +50,7 @@
+ #include "base/types.hh" // For Tick and Addr data types.
+ #include "cpu/thread_context.hh"
+ #include "debug/PseudoInst.hh"
++#include "hmv/integration/gem5/pseudo_inst.hh" // HOME-V: pseudo-instructions
+ #include "sim/guest_abi.hh"
+
+ namespace gem5
+@@ -234,7 +235,13 @@ pseudoInstWork(ThreadContext *tc, uint8_t func, uint64_t &result)
+         return true;
+
+       case M5OP_RESERVED1:
++        // HOME-V: pseudo-instructions
++        result = invokeSimcall<ABI, store_ret>(tc, hmvexecute);
++        return true;
+       case M5OP_RESERVED2:
++        // HOME-V: pseudo-instructions
++        result = invokeSimcall<ABI, store_ret>(tc, hmvload);
++        return true;
+       case M5OP_RESERVED3:
+       case M5OP_RESERVED4:
+       case M5OP_RESERVED5:
+diff --git a/src/sim/system.cc b/src/sim/system.cc
+--- a/src/sim/system.cc
++++ b/src/sim/system.cc
+@@ -183,6 +183,7 @@ System::System(const Params &p)
+       _m5opRange(p.m5ops_base ?
+                  RangeSize(p.m5ops_base, 0x10000) :
+                  AddrRange(1, 0)), // Create an empty range if disabled
++      hmvController(p.hmv_controller), // HOME-V: controller
+       redirectPaths(p.redirect_paths)
+ {
+     panic_if(!workload, "No workload set for system %s "
+diff --git a/src/sim/system.hh b/src/sim/system.hh
+--- a/src/sim/system.hh
++++ b/src/sim/system.hh
+@@ -67,6 +67,7 @@
+ namespace gem5
+ {
+
++class HMVController; // HOME-V: controller
+ class BaseRemoteGDB;
+ class KvmVM;
+ class ThreadContext;
+@@ -607,6 +608,7 @@ class System : public SimObject, public PCEventScope
+     /** Process set to track which PIDs have already been allocated */
+     std::set<int> PIDs;
+
++    HMVController *const hmvController; // HOME-V: controller
+     // By convention, all signals are owned by the receiving process. The
+     // receiver will delete the signal upon reception.
+     std::list<BasicSignal> signalList;

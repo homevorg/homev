@@ -1,0 +1,9 @@
+-Isrc
+-Iplatforms/gem5/build/ALL
+-Iplatforms/gem5/src
+-Iplatforms/gem5/ext
+-Iplatforms/gem5/include
+-Isrc/hmv/integration
+-I/usr/include/python3.14
+-DTRACING_ON
+-std=c++23

@@ -1,0 +1,542 @@
+diff --git a/src/mem/ruby/protocol/MESI_Three_Level-L1cache.sm b/src/mem/ruby/protocol/MESI_Three_Level-L1cache.sm
+--- a/src/mem/ruby/protocol/MESI_Three_Level-L1cache.sm
++++ b/src/mem/ruby/protocol/MESI_Three_Level-L1cache.sm
+@@ -113,6 +113,9 @@ machine(MachineType:L1Cache, "MESI Directory L1 Cache CMP")
+
+     // internally generated requests:
+     L0_Invalidate_Own,  desc="Invalidate line in L0, due to this cache's (L1) requirements";
++    // HOME-V: Begin of modifications
++    L0_Invalidate_Own_L1_F02, desc="Invalidate line in L0, due to this cache's (L1) requirements (L1_F02)";
++    // HOME-V: End of modifications
+     L0_Invalidate_Else, desc="Invalidate line in L0, due to another cache's requirements";
+     L1_Replacement,     desc="Invalidate line in this cache (L1), due to another cache's requirements";
+
+@@ -396,8 +399,16 @@ machine(MachineType:L1Cache, "MESI Directory L1 Cache CMP")
+                     TBE victim_tbe := TBEs[victim];
+
+                     if (is_valid(victim_entry) && inL0Cache(victim_entry.CacheState)) {
++                      // HOME-V: Begin of modifications
++                      if (hmv_controller.can_inject(HMVFault::MESI3_L1_F02, victim)
++                          && victim_entry.CacheState == State:S) {
++                        trigger(Event:L0_Invalidate_Own_L1_F02,
++                                victim, victim_entry, victim_tbe);
++                      } else {
++                      // HOME-V: End of modifications
+                         trigger(Event:L0_Invalidate_Own,
+                                 victim, victim_entry, victim_tbe);
++                      }
+                     }  else {
+                         trigger(Event:L1_Replacement,
+                                 victim, victim_entry, victim_tbe);
+@@ -722,6 +733,21 @@ machine(MachineType:L1Cache, "MESI Directory L1 Cache CMP")
+       }
+     }
+   }
++  // HOME-V: Begin of modifications
++  action(u_writeDataFromL0Request_L1_F01, "ureql0l1f01", desc="Write data to cache for fault L1_F01") {
++    if (hmv_controller.can_inject(HMVFault::MESI3_L1_F01, address)) {
++      // Preclude u_writeDataFromL0Request action
++    } else {
++      peek(messageBufferFromL0_in, CoherenceMsg) {
++        assert(is_valid(cache_entry));
++        if (in_msg.Dirty) {
++            cache_entry.DataBlk := in_msg.DataBlk;
++            cache_entry.Dirty := in_msg.Dirty;
++        }
++      }
++    }
++  }
++  // HOME-V: Begin of modifications
+
+   action(u_writeDataFromL2Response, "uresl2", desc="Write data to cache") {
+     peek(responseNetwork_in, ResponseMsg) {
+@@ -838,6 +864,11 @@ machine(MachineType:L1Cache, "MESI Directory L1 Cache CMP")
+   transition(S, L0_Invalidate_Own, S_IL0) {
+     forward_eviction_to_L0_own;
+   }
++  // HOME-V: Begin of modifications
++  transition(S, L0_Invalidate_Own_L1_F02, SS) {
++    // Preclude all actions
++  }
++  // HOME-V: End of modifications
+
+   transition(S, L0_Invalidate_Else, S_IL0) {
+     forward_eviction_to_L0_else;
+@@ -1054,11 +1085,24 @@ machine(MachineType:L1Cache, "MESI Directory L1 Cache CMP")
+     kd_wakeUpDependents;
+   }
+
+-  transition({M_IL0, E_IL0}, WriteBack, MM_IL0) {
++  // HOME-V: Begin of modifications
++  // transition split, original code:
++  //transition({M_IL0, E_IL0}, WriteBack, MM_IL0) {
++  //  u_writeDataFromL0Request;
++  //  k_popL0RequestQueue;
++  //  kd_wakeUpDependents;
++  //}
++  transition(M_IL0, WriteBack, MM_IL0) {
+     u_writeDataFromL0Request;
+     k_popL0RequestQueue;
+     kd_wakeUpDependents;
+   }
++  transition(E_IL0, WriteBack, MM_IL0) {
++    u_writeDataFromL0Request_L1_F01;
++    k_popL0RequestQueue;
++    kd_wakeUpDependents;
++  }
++  // HOME-V: End of modifications
+
+   transition({M_IL0, E_IL0}, L0_DataAck, MM) {
+     u_writeDataFromL0Response;
+diff --git a/src/mem/ruby/protocol/MESI_Two_Level-L2cache.sm b/src/mem/ruby/protocol/MESI_Two_Level-L2cache.sm
+--- a/src/mem/ruby/protocol/MESI_Two_Level-L2cache.sm
++++ b/src/mem/ruby/protocol/MESI_Two_Level-L2cache.sm
+@@ -110,6 +110,9 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
+
+     // events initiated by this L2
+     L2_Replacement,     desc="L2 Replacement", format="!r";
++    // HOME-V: Begin of modifications
++    L2_Replacement_L2_F01,    desc="L2 Replacement (L2_F01)", format="!r";
++    // HOME-V: End of modifications
+     L2_Replacement_clean,     desc="L2 Replacement, but data is clean", format="!r";
+
+     // events from memory controller
+@@ -397,7 +400,14 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
+             Addr victim := L2cache.cacheProbe(in_msg.addr);
+             Entry L2cache_entry := getCacheEntry(victim);
+             if (isDirty(L2cache_entry)) {
++              // HOME-V: Begin of modifications
++              if (hmv_controller.can_inject(HMVFault::MESI2_L2_F01, victim)
++                  && L2cache_entry.CacheState == State:MT) {
++                trigger(Event:L2_Replacement_L2_F01, victim, L2cache_entry, TBEs[victim]);
++              } else {
++              // HOME-V: End of modifications
+               trigger(Event:L2_Replacement, victim, L2cache_entry, TBEs[victim]);
++              }
+             } else {
+               trigger(Event:L2_Replacement_clean,
+                       victim, L2cache_entry, TBEs[victim]);
+@@ -1009,6 +1019,13 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
+     f_sendInvToSharers;
+     rr_deallocateL2CacheBlock;
+   }
++  // HOME-V: Begin of modifications
++  transition(MT, L2_Replacement_L2_F01, MCT_I) {
++    i_allocateTBE;
++    f_sendInvToSharers;
++    rr_deallocateL2CacheBlock;
++  }
++  // HOME-V: End of modifications
+
+   transition(MT, L2_Replacement_clean, MCT_I) {
+     i_allocateTBE;
+diff --git a/src/mem/ruby/protocol/MOESI_CMP_directory-L1cache.sm b/src/mem/ruby/protocol/MOESI_CMP_directory-L1cache.sm
+--- a/src/mem/ruby/protocol/MOESI_CMP_directory-L1cache.sm
++++ b/src/mem/ruby/protocol/MOESI_CMP_directory-L1cache.sm
+@@ -569,6 +569,101 @@ machine(MachineType:L1Cache, "L1 cache protocol")
+       }
+     }
+   }
++  // HOME-V: Begin of modifications
++  action(e_sendData_L1_F02, "ef02", desc="Send data from cache to requestor for fault L1_F02") {
++    peek(requestNetwork_in, RequestMsg) {
++      assert(is_valid(cache_entry));
++      if (in_msg.RequestorMachine == MachineType:L2Cache) {
++        enqueue(responseNetwork_out, ResponseMsg, cacheResponseLatency()) {
++          out_msg.addr := address;
++          out_msg.Type := CoherenceResponseType:DATA;
++          out_msg.Sender := machineID;
++          out_msg.SenderMachine := MachineType:L1Cache;
++          out_msg.Destination.add(mapAddressToMachine(address,
++                                                      MachineType:L2Cache));
++          if (hmv_controller.can_inject(HMVFault::MOESI_L1_F02, address)) {
++            // Don't set data block
++          }
++          else {
++            out_msg.DataBlk := cache_entry.DataBlk;
++          }
++          // out_msg.Dirty := cache_entry.Dirty;
++          out_msg.Dirty := false;
++          out_msg.Acks := in_msg.Acks;
++          out_msg.MessageSize := MessageSizeType:Response_Data;
++        }
++        DPRINTF(RubySlicc, "Sending data to L2: %#x\n", in_msg.addr);
++      }
++      else {
++        enqueue(responseNetwork_out, ResponseMsg, cacheResponseLatency()) {
++          out_msg.addr := address;
++          out_msg.Type := CoherenceResponseType:DATA;
++          out_msg.Sender := machineID;
++          out_msg.SenderMachine := MachineType:L1Cache;
++          out_msg.Destination.add(in_msg.Requestor);
++          if (hmv_controller.can_inject(HMVFault::MOESI_L1_F02, address)) {
++            // Don't set data block
++          }
++          else {
++            out_msg.DataBlk := cache_entry.DataBlk;
++          }
++          // out_msg.Dirty := cache_entry.Dirty;
++          out_msg.Dirty := false;
++          out_msg.Acks := in_msg.Acks;
++          out_msg.MessageSize := MessageSizeType:ResponseLocal_Data;
++        }
++        DPRINTF(RubySlicc, "Sending data to L1\n");
++      }
++    }
++  }
++
++  action(e_sendData_L1_F04, "ef04", desc="Send data from cache to requestor for fault L1_F04") {
++    peek(requestNetwork_in, RequestMsg) {
++      assert(is_valid(cache_entry));
++      if (in_msg.RequestorMachine == MachineType:L2Cache) {
++        enqueue(responseNetwork_out, ResponseMsg, cacheResponseLatency()) {
++          out_msg.addr := address;
++          out_msg.Type := CoherenceResponseType:DATA;
++          out_msg.Sender := machineID;
++          out_msg.SenderMachine := MachineType:L1Cache;
++          out_msg.Destination.add(mapAddressToMachine(address,
++                                                      MachineType:L2Cache));
++          if (hmv_controller.can_inject(HMVFault::MOESI_L1_F04, address)) {
++            // Don't set data block
++          }
++          else {
++            out_msg.DataBlk := cache_entry.DataBlk;
++          }
++          // out_msg.Dirty := cache_entry.Dirty;
++          out_msg.Dirty := false;
++          out_msg.Acks := in_msg.Acks;
++          out_msg.MessageSize := MessageSizeType:Response_Data;
++        }
++        DPRINTF(RubySlicc, "Sending data to L2: %#x\n", in_msg.addr);
++      }
++      else {
++        enqueue(responseNetwork_out, ResponseMsg, cacheResponseLatency()) {
++          out_msg.addr := address;
++          out_msg.Type := CoherenceResponseType:DATA;
++          out_msg.Sender := machineID;
++          out_msg.SenderMachine := MachineType:L1Cache;
++          out_msg.Destination.add(in_msg.Requestor);
++          if (hmv_controller.can_inject(HMVFault::MOESI_L1_F04, address)) {
++            // Don't set data block
++          }
++          else {
++            out_msg.DataBlk := cache_entry.DataBlk;
++          }
++          // out_msg.Dirty := cache_entry.Dirty;
++          out_msg.Dirty := false;
++          out_msg.Acks := in_msg.Acks;
++          out_msg.MessageSize := MessageSizeType:ResponseLocal_Data;
++        }
++        DPRINTF(RubySlicc, "Sending data to L1\n");
++      }
++    }
++  }
++  // HOME-V: End of modifications
+
+   action(ee_sendDataExclusive, "\e", desc="Send data from cache to requestor, don't keep a shared copy") {
+     peek(requestNetwork_in, RequestMsg) {
+@@ -604,6 +699,46 @@ machine(MachineType:L1Cache, "L1 cache protocol")
+       }
+     }
+   }
++  // HOME-V: Begin of modifications
++  action(ee_sendDataExclusive_L1_F01, "\ef01", desc="Send data from cache to requestor, don't keep a shared copy for fault L1_F01") {
++    peek(requestNetwork_in, RequestMsg) {
++      assert(is_valid(cache_entry));
++      if (in_msg.RequestorMachine == MachineType:L2Cache) {
++        enqueue(responseNetwork_out, ResponseMsg, cacheResponseLatency()) {
++          out_msg.addr := address;
++          out_msg.Type := CoherenceResponseType:DATA_EXCLUSIVE;
++          out_msg.Sender := machineID;
++          out_msg.SenderMachine := MachineType:L1Cache;
++          out_msg.Destination.add(mapAddressToMachine(address,
++                                                      MachineType:L2Cache));
++          out_msg.DataBlk := cache_entry.DataBlk;
++          out_msg.Dirty := cache_entry.Dirty;
++          out_msg.Acks := in_msg.Acks;
++          out_msg.MessageSize := MessageSizeType:Response_Data;
++        }
++        DPRINTF(RubySlicc, "Sending exclusive data to L2\n");
++      }
++      else {
++        enqueue(responseNetwork_out, ResponseMsg, cacheResponseLatency()) {
++          out_msg.addr := address;
++          out_msg.Type := CoherenceResponseType:DATA_EXCLUSIVE;
++          out_msg.Sender := machineID;
++          out_msg.SenderMachine := MachineType:L1Cache;
++          out_msg.Destination.add(in_msg.Requestor);
++          if (hmv_controller.can_inject(HMVFault::MOESI_L1_F01, address)) {
++            // Do not set data block inside outgoing message
++          } else {
++            out_msg.DataBlk := cache_entry.DataBlk;
++          }
++          out_msg.Dirty := cache_entry.Dirty;
++          out_msg.Acks := in_msg.Acks;
++          out_msg.MessageSize := MessageSizeType:ResponseLocal_Data;
++        }
++        DPRINTF(RubySlicc, "Sending exclusive data to L1\n");
++      }
++    }
++  }
++  // HOME-V: End of modifications
+
+   action(f_sendAck, "f", desc="Send ack from cache to requestor") {
+     peek(requestNetwork_in, RequestMsg) {
+@@ -806,6 +941,53 @@ machine(MachineType:L1Cache, "L1 cache protocol")
+       }
+     }
+   }
++  // HOME-V: Begin of modifications
++  action(q_sendDataFromTBEToCache_L1_F03, "qf03", desc="Send data from TBE to cache for fault L1_F03") {
++    peek(requestNetwork_in, RequestMsg) {
++      assert(is_valid(tbe));
++      if (in_msg.RequestorMachine == MachineType:L1Cache ||
++          in_msg.RequestorMachine == MachineType:DMA) {
++        enqueue(responseNetwork_out, ResponseMsg, response_latency) {
++          out_msg.addr := address;
++          out_msg.Type := CoherenceResponseType:DATA;
++          out_msg.Sender := machineID;
++          out_msg.SenderMachine := MachineType:L1Cache;
++          out_msg.Destination.add(in_msg.Requestor);
++          if (hmv_controller.can_inject(HMVFault::MOESI_L1_F03, address)) {
++            // Don't set data block
++          }
++          else {
++            out_msg.DataBlk := tbe.DataBlk;
++          }
++          // out_msg.Dirty := tbe.Dirty;
++          out_msg.Dirty := false;
++          out_msg.Acks := in_msg.Acks;
++          out_msg.MessageSize := MessageSizeType:ResponseLocal_Data;
++        }
++      }
++      else {
++        enqueue(responseNetwork_out, ResponseMsg, response_latency) {
++          out_msg.addr := address;
++          out_msg.Type := CoherenceResponseType:DATA;
++          out_msg.Sender := machineID;
++          out_msg.SenderMachine := MachineType:L1Cache;
++          out_msg.Destination.add(mapAddressToMachine(address,
++                                                      MachineType:L2Cache));
++          if (hmv_controller.can_inject(HMVFault::MOESI_L1_F03, address)) {
++            // Don't set data block
++          }
++          else {
++            out_msg.DataBlk := tbe.DataBlk;
++          }
++          // out_msg.Dirty := tbe.Dirty;
++          out_msg.Dirty := false;
++          out_msg.Acks := in_msg.Acks;
++          out_msg.MessageSize := MessageSizeType:Response_Data;
++        }
++      }
++    }
++  }
++  // HOME-V: End of modifications
+
+   action(q_sendExclusiveDataFromTBEToCache, "qq", desc="Send data from TBE to cache") {
+     peek(requestNetwork_in, RequestMsg) {
+@@ -1017,7 +1199,10 @@ machine(MachineType:L1Cache, "L1 cache protocol")
+   }
+
+   transition(S, Fwd_GETS) {
+-    e_sendData;
++    // HOME-V: Begin of modifications
++    // e_sendData; // original action
++    e_sendData_L1_F04;
++    // HOME-V: End of modifications
+     l_popForwardQueue;
+   }
+
+@@ -1074,7 +1259,10 @@ machine(MachineType:L1Cache, "L1 cache protocol")
+   }
+
+   transition(MM, Fwd_GETX, I) {
+-    ee_sendDataExclusive;
++    // HOME-V: Begin of modifications
++    // ee_sendDataExclusive; // original action
++    ee_sendDataExclusive_L1_F01;
++    // HOME-V: End of modifications
+     forward_eviction_to_cpu;
+     l_popForwardQueue;
+   }
+@@ -1170,7 +1358,10 @@ machine(MachineType:L1Cache, "L1 cache protocol")
+   }
+
+   transition(SM, Fwd_GETS) {
+-    e_sendData;
++    // HOME-V: Begin of modifications
++    // e_sendData; // original action
++    e_sendData_L1_F02;
++    // HOME-V: End of modifications
+     l_popForwardQueue;
+   }
+
+@@ -1273,10 +1464,24 @@ machine(MachineType:L1Cache, "L1 cache protocol")
+     l_popForwardQueue;
+   }
+
+-  transition({SI, OI}, Fwd_GETS) {
++  // HOME-V: Begin of modifications
++  // Original transitions:
++  // transition({SI, OI}, Fwd_GETS) {
++  //   q_sendDataFromTBEToCache;
++  //   l_popForwardQueue;
++  // }
++
++  transition(SI, Fwd_GETS) {
++    // q_sendDataFromTBEToCache; // original action
++    q_sendDataFromTBEToCache_L1_F03;
++    l_popForwardQueue;
++  }
++
++  transition(OI, Fwd_GETS) {
+     q_sendDataFromTBEToCache;
+     l_popForwardQueue;
+   }
++  // HOME-V: End of modifications
+
+   transition({SI, OI}, Fwd_DMA) {
+     q_sendDataFromTBEToCache;
+diff --git a/src/mem/ruby/protocol/MOESI_CMP_directory-L2cache.sm b/src/mem/ruby/protocol/MOESI_CMP_directory-L2cache.sm
+--- a/src/mem/ruby/protocol/MOESI_CMP_directory-L2cache.sm
++++ b/src/mem/ruby/protocol/MOESI_CMP_directory-L2cache.sm
+@@ -1487,6 +1487,32 @@ machine(MachineType:L2Cache, "Token protocol")
+       }
+     }
+   }
++  // HOME-V: Begin of modifications
++  action(qq_sendDataFromTBEToMemory_L2_F04F05, "qqf0405", desc="Send data from TBE to directory for L2_F04 and L2_F05 fault") {
++    enqueue(globalRequestNetwork_out, RequestMsg, response_latency) {
++      assert(is_valid(tbe));
++      out_msg.addr := address;
++      out_msg.Requestor := machineID;
++      out_msg.RequestorMachine := MachineType:L2Cache;
++      out_msg.Destination.add(mapAddressToMachine(address, MachineType:Directory));
++      if (tbe.Dirty && !hmv_controller.can_inject(HMVFault::MOESI_L2_F05, address)) {
++        out_msg.Type := CoherenceRequestType:WRITEBACK_DIRTY_DATA;
++        if (hmv_controller.can_inject(HMVFault::MOESI_L2_F04, address)) {
++          // Do not set data block inside outgoing message
++        } else {
++          out_msg.DataBlk := tbe.DataBlk;
++        }
++        out_msg.MessageSize := MessageSizeType:Writeback_Data;
++      } else {
++        out_msg.Type := CoherenceRequestType:WRITEBACK_CLEAN_ACK;
++        // NOTE: in a real system this would not send data.  We send
++        // data here only so we can check it at the memory
++        out_msg.DataBlk := tbe.DataBlk;
++        out_msg.MessageSize := MessageSizeType:Writeback_Control;
++      }
++    }
++  }
++  // HOME-V: End of modifications
+
+   action( r_setMRU, "\rrr", desc="manually set the MRU bit for cache line" ) {
+     if(is_valid(cache_entry)) {
+@@ -1539,6 +1565,21 @@ machine(MachineType:L2Cache, "Token protocol")
+       assert(cache_entry.Dirty == false);
+     }
+   }
++  // HOME-V: Begin of modifications
++  action(u_writeCleanDataToCache_L2_F01, "wCdf01", desc="Write clean data to cache for fault L2_F01") {
++    if (hmv_controller.can_inject(HMVFault::MOESI_L2_F01, address)) {
++      // Preclude u_writeCleanDataToCache action
++    } else {
++      peek(L1requestNetwork_in, RequestMsg) {
++        assert(is_valid(cache_entry));
++        cache_entry.DataBlk := in_msg.DataBlk;
++        DPRINTF(RubySlicc, "Address: %#x, Data Block: %s\n",
++              address, cache_entry.DataBlk);
++        assert(cache_entry.Dirty == false);
++      }
++    }
++  }
++  // HOME-V: End of modifications
+
+   action(u_writeDirtyDataToCache, "wDd", desc="Write dirty data to cache") {
+     peek(L1requestNetwork_in, RequestMsg) {
+@@ -1549,6 +1590,35 @@ machine(MachineType:L2Cache, "Token protocol")
+       cache_entry.Dirty := true;
+     }
+   }
++  // HOME-V: Begin of modifications
++  action(u_writeDirtyDataToCache_L2_F02, "wDdf01f02", desc="Write dirty data to cache for fault L2_F02") {
++    peek(L1requestNetwork_in, RequestMsg) {
++      assert(is_valid(cache_entry));
++      cache_entry.DataBlk := in_msg.DataBlk;
++      DPRINTF(RubySlicc, "Address: %#x, Data Block: %s\n",
++            address, cache_entry.DataBlk);
++      if (hmv_controller.can_inject(HMVFault::MOESI_L2_F02, address)) {
++        cache_entry.Dirty := false; // Wrongly set dirty bit to false
++      } else {
++        cache_entry.Dirty := true;
++      }
++    }
++  }
++
++  action(u_writeDirtyDataToCache_L2_F03, "wDdf03", desc="Write dirty data to cache for fault L2_F03") {
++    peek(L1requestNetwork_in, RequestMsg) {
++      assert(is_valid(cache_entry));
++      cache_entry.DataBlk := in_msg.DataBlk;
++      DPRINTF(RubySlicc, "Address: %#x, Data Block: %s\n",
++            address, cache_entry.DataBlk);
++      if (hmv_controller.can_inject(HMVFault::MOESI_L2_F03, address)) {
++        cache_entry.Dirty := false; // Wrongly set dirty bit to false
++      } else {
++        cache_entry.Dirty := true;
++      }
++    }
++  }
++  // HOME-V: End of modifications
+
+   action(vv_allocateL2CacheBlock, "\v", desc="Set L2 cache tag equal to tag of block B.") {
+     set_cache_entry(L2cache.allocate(address, new Entry));
+@@ -2741,7 +2811,10 @@ machine(MachineType:L2Cache, "Token protocol")
+     vv_allocateL2CacheBlock;
+     y_copyDirToCacheAndRemove;
+     gg_clearOwnerFromL1Request;
+-    u_writeDirtyDataToCache;
++    // HOME-V: Begin of modifications
++    // u_writeDirtyDataToCache; // original action
++    u_writeDirtyDataToCache_L2_F02;
++    // HOME-V: End of modifications
+     o_popL1RequestQueue;
+     wa_wakeUpDependents;
+   }
+@@ -2750,7 +2823,10 @@ machine(MachineType:L2Cache, "Token protocol")
+     vv_allocateL2CacheBlock;
+     y_copyDirToCacheAndRemove;
+     gg_clearOwnerFromL1Request;
+-    u_writeCleanDataToCache;
++    // HOME-V: Begin of modifications
++    // u_writeCleanDataToCache; // original action
++    u_writeCleanDataToCache_L2_F01;
++    // HOME-V: End of modifications
+     o_popL1RequestQueue;
+     wa_wakeUpDependents;
+   }
+@@ -2777,7 +2853,10 @@ machine(MachineType:L2Cache, "Token protocol")
+     vv_allocateL2CacheBlock;
+     y_copyDirToCacheAndRemove;
+     gg_clearOwnerFromL1Request;
+-    u_writeDirtyDataToCache;
++    // HOME-V: Begin of modifications
++    // u_writeDirtyDataToCache;
++    u_writeDirtyDataToCache_L2_F03;
++    // HOME-V: End of modifications
+     o_popL1RequestQueue;
+     wa_wakeUpDependents;
+   }
+@@ -2917,7 +2996,10 @@ machine(MachineType:L2Cache, "Token protocol")
+   }
+
+   transition(OLSI, Writeback_Ack, ILS) {
+-    qq_sendDataFromTBEToMemory;
++    // HOME-V: Begin of modifications
++    // qq_sendDataFromTBEToMemory; // original action
++    qq_sendDataFromTBEToMemory_L2_F04F05;
++    // HOME-V: End of modifications
+     s_deallocateTBE;
+     n_popResponseQueue;
+     wa_wakeUpDependents;

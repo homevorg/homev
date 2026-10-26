@@ -1,0 +1,52 @@
+// Copyright (C) 2025-2026 Marleson Graf
+
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to
+// deal in the Software without restriction, including without limitation the
+// rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
+// sell copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+
+// The above copyright notice and this permission notice shall be included in
+// all copies or substantial portions of the Software.
+
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+// FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+// IN THE SOFTWARE.
+
+#include "gem5/m5ops.h"
+
+// See: gem5/util/m5/src/abi/riscv/m5op.S
+// riscv pseudo instructions have bit 1:0 (QUADRANT) = 0x3,
+// bit 6:2 (OPCODE5) = 0x1e, and bit 31:25 (M5FUNC) specifies
+// the function performed by pseudo instruction
+#define M5_INST(opcode, ...)                                                   \
+    asm volatile(".long 0x0000007b | (%[op] << 25)\n"                          \
+                 "and a0, a0, a0"                                              \
+                 : "=r"(a0)                                                    \
+                 : [op] "i"(opcode), __VA_ARGS__                               \
+                 : "memory")
+
+[[gnu::noinline]] uint64_t gem5_hmv_load(gem5_hmv_parameter_t param,
+                                         uint64_t value,
+                                         volatile void* buffer) {
+    register long a0 asm("a0");
+    M5_INST(GEM5_HMV_LOAD, "r"(param), "r"(value), "r"(buffer));
+    return a0;
+}
+
+[[gnu::noinline]] uint64_t gem5_hmv_execute(gem5_hmv_action_t action,
+                                            uint64_t value) {
+    register long a0 asm("a0");
+    M5_INST(GEM5_HMV_EXECUTE, "r"(action), "r"(value));
+    return a0;
+}
+
+// define start function to call main
+asm(".global _start                 \n"
+    "_start:                        \n"
+    "    j main                     \n");

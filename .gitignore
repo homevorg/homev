@@ -1,0 +1,7 @@
+build/
+platforms/
+results/
+*.pyc
+.pyenv
+.vscode
+.venv

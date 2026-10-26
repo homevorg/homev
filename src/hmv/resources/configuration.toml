@@ -1,0 +1,218 @@
+# Copyright (C) 2025-2026 Marleson Graf
+
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+[builder]
+# path to install platforms
+install_dir = "platforms"
+
+[builder.gem5]
+# gem5 version to clone
+version = "v25.1.0.1"
+# gem5's git url
+git_url = "https://github.com/gem5/gem5.git"
+# patches to apply (path relative to src/hmv/integration)
+patches = ["gem5/base.patch", "gem5/fault_injection.patch"]
+
+[runner]
+# word size, either DWORD (4 bytes) or QWORD (8 bytes)
+word_size = "DWORD"
+# address size (in bits), defines maximum shared memory size
+address_size = 27
+# path to install platforms
+install_dir = "platforms"
+# path to store hmv-run's output
+output_dir = "results"
+
+[runner.Random]
+# sharing biasing constraint (true = disallow false sharing)
+sbc = true
+# cache size (in bytes) used by Biasing to calculate tag/index (defaults to LLC size)
+# cache_size = 4194304
+# block size (in bytes) used by Biasing to calculate offset size (defaults to LLC block size)
+# block_size = 64
+# cache associativity (in blocks) used by Biasing to calculate tag/index (defaults to LLC associativity)
+# cache_associativity = 16
+
+[runner.SCA]
+# sharing biasing constraint (true = disallow false sharing)
+sbc = true
+# categories mix to configure Chaining [cat0, cat1, cat2, cat3]
+mix = [0.0, 0.0, 0.5, 0.5]
+# cache size (in bytes) used by Biasing to calculate tag/index (defaults to LLC size)
+# cache_size = 4194304
+# block size (in bytes) used by Biasing to calculate offset size (defaults to LLC block size)
+# block_size = 64
+# cache associativity (in blocks) used by Biasing to calculate tag/index (defaults to LLC associativity)
+# cache_associativity = 16
+
+[runner.HTG]
+# sharing biasing constraint (true = disallow false sharing)
+sbc = true
+# categories mix to configure Chaining [cat0, cat1, cat2, cat3]
+mix = [0.0, 0.0, 0.5, 0.5]
+# cache size (in bytes) used by Biasing to calculate tag/index (defaults to LLC size)
+# cache_size = 4194304
+# block size (in bytes) used by Biasing to calculate offset size (defaults to LLC block size)
+# block_size = 64
+# cache associativity (in blocks) used by Biasing to calculate tag/index (defaults to LLC associativity)
+# cache_associativity = 16
+
+[runner.McVerSi]
+# default values extracted from McVerSi's paper: https://www.marcoelver.com/res/hpca2016-mcversi.pdf
+tournament_size = 2
+mates = 2
+mutation_rate = 0.005
+p_usel = 0.2
+p_bfa = 0.05
+chunk_size = 512
+hole_size = 1048576   # 1024 * 1024
+nop_max_seq_size = 50
+# mix originally defined for ARMv7 in https://www.marcoelver.com/files/mcversi_gem5.patch
+# [loads, loads with RAW hazard, stores, fences, nops]
+mix = [0.32, 0.24, 0.42, 0.01, 0.01]
+
+[runner.gem5]
+# ARM compiler to compile guest workload
+ARM.test_compiler = "aarch64-linux-g++"
+# additional sources required by ARM
+ARM.test_sources = ["gem5/testsuite/arch/aarch64.cpp"]
+# ARM-specific compiler flags
+ARM.test_flags = [
+    "-march=armv8.1-a",
+    "-ffreestanding",
+    "-nostartfiles",
+    "-nodefaultlibs",
+]
+# RISC-V compiler to compile guest workload
+RISCV.test_compiler = "riscv64-linux-g++"
+# additional sources required by RISC-V
+RISCV.test_sources = ["gem5/testsuite/arch/riscv64.cpp"]
+# RISC-V-specific compiler flags
+RISCV.test_flags = [
+    "-march=rv64id",
+    "-mabi=lp64d",
+    "-ffreestanding",
+    "-nostartfiles",
+    "-nodefaultlibs",
+    # flag required due to bug: https://sourceware.org/bugzilla/show_bug.cgi?id=24983
+    "-mno-relax",
+]
+
+[runner.gem5.parameters]
+# Virtual address pointing to start of shared region
+shared_memory_region = 0xCAFE000000000
+
+[runner.gem5.parameters.System]
+clock = "1GHz"
+voltage = "1.0V"
+memory_type = "DDR4_2400_8x8"
+
+[runner.gem5.parameters.Ruby]
+address_size_bits = 48
+block_size = 64
+clock = "2GHz"
+num_llcaches = 1
+num_dirs = 1
+enable_prefetch = false
+network = "simple"
+topology = "crossbar"
+link_latency = 1
+garnet_router_latency = 1
+simple_physical_channels = false
+
+[runner.gem5.parameters.CPU]
+type = "O3"
+clock = "3GHz"
+voltage = "1.0V"
+# Parameters taken from gem5/configs/common/cores/arm/O3_ARM_v7a.py
+LQEntries = 16
+SQEntries = 16
+LSQDepCheckShift = 0
+LFSTSize = 1024
+SSITSize = "1024"
+decodeToFetchDelay = 1
+renameToFetchDelay = 1
+iewToFetchDelay = 1
+commitToFetchDelay = 1
+renameToDecodeDelay = 1
+iewToDecodeDelay = 1
+commitToDecodeDelay = 1
+iewToRenameDelay = 1
+commitToRenameDelay = 1
+commitToIEWDelay = 1
+fetchWidth = 3
+fetchBufferSize = 16
+fetchToDecodeDelay = 3
+decodeWidth = 3
+decodeToRenameDelay = 2
+renameWidth = 3
+renameToIEWDelay = 1
+issueToExecuteDelay = 1
+dispatchWidth = 6
+issueWidth = 8
+wbWidth = 8
+iewToCommitDelay = 1
+renameToROBDelay = 1
+commitWidth = 8
+squashWidth = 8
+trapLatency = 13
+backComSize = 5
+forwardComSize = 5
+numPhysIntRegs = 128
+numPhysFloatRegs = 192
+numPhysVecRegs = 48
+numIQEntries = 32
+numROBEntries = 40
+
+[runner.presets.MESI3.gem5.parameters.Ruby]
+protocol = "MESI_Three_Level"
+# L1: 4 KiB, 1-way private cache
+L1i = { size = "4KiB", associativity = 1, dataAccessLatency = 1, tagAccessLatency = 1 }
+L1d = { size = "4KiB", associativity = 1, dataAccessLatency = 2, tagAccessLatency = 2 }
+# L2: 64 KiB, 4-way private cache
+L2 = { size = "64KiB", associativity = 4, dataAccessLatency = 12, tagAccessLatency = 12 }
+# L3: 4 MiB, 16-way shared cache
+L3 = { size = "4MiB", associativity = 16, dataAccessLatency = 20, tagAccessLatency = 20 }
+# (transition count is an approximation of reachable transitions)
+L1Controller = { transition_count = 41, transitions_per_cycle = 32, request_latency = 2, response_latency = 2 }
+L2Controller = { transition_count = 97, transitions_per_cycle = 32, request_latency = 2, response_latency = 2, to_latency = 1 }
+L3Controller = { transition_count = 114, transitions_per_cycle = 4, request_latency = 2, response_latency = 2, to_latency = 1 }
+
+[runner.presets.MESI2.gem5.parameters.Ruby]
+protocol = "MESI_Two_Level"
+# L1: 64 KiB, 4-way private cache
+L1i = { size = "64KiB", associativity = 4, dataAccessLatency = 1, tagAccessLatency = 1 }
+L1d = { size = "64KiB", associativity = 4, dataAccessLatency = 2, tagAccessLatency = 2 }
+# L2: 4 MiB, 16-way shared cache
+L2 = { size = "4MiB", associativity = 16, dataAccessLatency = 20, tagAccessLatency = 20 }
+# (transition count is an approximation of reachable transitions)
+L1Controller = { transition_count = 57, transitions_per_cycle = 4, request_latency = 2, response_latency = 2, to_latency = 1 }
+L2Controller = { transition_count = 119, transitions_per_cycle = 4, request_latency = 2, response_latency = 2, to_latency = 1 }
+
+[runner.presets.MOESI.gem5.parameters.Ruby]
+protocol = "MOESI_CMP_directory"
+# L1: 64 KiB, 4-way private cache
+L1i = { size = "64KiB", associativity = 4, dataAccessLatency = 1, tagAccessLatency = 1 }
+L1d = { size = "64KiB", associativity = 4, dataAccessLatency = 2, tagAccessLatency = 2 }
+# L2: 4 MiB, 16-way shared cache
+L2 = { size = "4MiB", associativity = 16, dataAccessLatency = 20, tagAccessLatency = 20 }
+# (transition count is an approximation of reachable transitions)
+L1Controller = { transition_count = 80, transitions_per_cycle = 4, request_latency = 1, response_latency = 1 }
+L2Controller = { transition_count = 244, transitions_per_cycle = 4, request_latency = 1, response_latency = 1 }

@@ -1,0 +1,49 @@
+id = "udt_example" # id used by hmv-run to generate unique result directory
+
+[[tests]] # first test
+# addresses = [A (index: 0), B (index: 1), C (index: 2), D (index: 3), E (index: 4)]
+addresses = [1048672, 720920, 1835040, 196620, 3407968]
+threads = [
+    [
+        { type = "STORE", address = 0, value = 0x1 }, # A = 0x1
+        { type = "LOAD", address = 1 },               # u = B
+        { type = "STORE", address = 2, value = 0x2 }, # C = 0x2
+        { type = "LOAD", address = 2 },               # x = C
+        { type = "STORE", address = 3, value = 0x3 }, # D = 0x3
+        { type = "LOAD", address = 4 },               # E = 0x4
+    ],
+    [
+        { type = "STORE", address = 1, value = 0x11 }, # B = 0x11
+        { type = "LOAD", address = 4 },                # u = E
+        { type = "LOAD", address = 0 },                # v = A
+        { type = "STORE", address = 1, value = 0x12 }, # C = 0x12
+        { type = "LOAD", address = 4 },                # x = E
+        { type = "LOAD", address = 3 },                # z = D
+    ],
+]
+
+[[tests]] # second test
+# addresses = [A (index: 0), B (index: 1), C (index: 2), D (index: 3), E (index: 4), F (index: 5)]
+addresses = [1048672, 720920, 1835040, 196620, 3407968, 207620]
+threads = [
+    [
+        { type = "STORE", address = 0, value = 0x1 }, # A = 0x1
+        { type = "LOAD", address = 1 },               # u = B
+        { type = "STORE", address = 2, value = 0x2 }, # C = 0x2
+        { type = "FENCE" },                           # memory fence
+        { type = "LOAD", address = 2 },               # x = C
+        { type = "STORE", address = 3, value = 0x3 }, # D = 0x3
+        { type = "LOAD", address = 4 },               # E = 0x4
+        { type = "STORE", address = 5, value = 0x5 }, # F = 0x5
+    ],
+    [
+        { type = "LOAD", address = 5 },                # y = F
+        { type = "STORE", address = 1, value = 0x11 }, # B = 0x11
+        { type = "LOAD", address = 4 },                # u = E
+        { type = "LOAD", address = 0 },                # v = A
+        { type = "FENCE" },                            # memory fence
+        { type = "STORE", address = 1, value = 0x12 }, # C = 0x12
+        { type = "LOAD", address = 4 },                # x = E
+        { type = "LOAD", address = 3 },                # z = D
+    ],
+]
