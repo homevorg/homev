@@ -1,8 +1,8 @@
 # HOME-V
 
-HOME-V is an open-source framework for multicore design verification which focuses on the validation of the interaction between cores through coherent shared memory. Not only it can accommodate existent approaches but can also support the development of novel
-techniques. To broaden potential usage, HOME-V was combined with gem5, an open-source simulation environment used worldwide by academic researchers and major technology companies. The framework is made available with a collection of integrated tools (generators of concurrent test programs and memory model checkers).
-HOME-v provides **H**igh **O**bservability of **M**emory **E**vents for **V**erification by means of a  general observability template for memory events. Such template can be tailored to the needs of distinct verification approaches reported in the literature. Besides, it provides an architecture-independent test format for describing abstract tests and an instruction-set architecture encoder that converts the abstracts tests into binaries without the need for compilation. Currently, ARMV8 and RISC-V targets are supported.
+HOME-V is an open-source framework for multicore design verification which focuses on the validation of the interaction between cores through coherent shared memory. Not only it can accommodate existent approaches but can also support the development of novel techniques. To broaden potential usage, HOME-V was combined with gem5, an open-source simulation environment used worldwide by academic researchers and major technology companies. The framework is made available with a collection of integrated tools (generators of concurrent test programs and memory model checkers).
+
+HOME-V provides **H**igh **O**bservability of **M**emory **E**vents for **V**erification by means of a  general observability template for memory events. Such template can be tailored to the needs of distinct verification approaches reported in the literature. Besides, it provides an architecture-independent test format for describing abstract tests and an instruction-set architecture encoder that converts the abstracts tests into binaries without the need for compilation. Currently, ARMv8 and RISC-V targets are supported.
 
 The following resources are available:
 * Checkers:
